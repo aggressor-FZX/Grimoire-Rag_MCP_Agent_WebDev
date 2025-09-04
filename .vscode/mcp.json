@@ -17,6 +17,15 @@
 				"reflex_docs_server_enhanced.py"
 			],
 			"env": {}
+		},
+		"reflex-dev-agent-enhanced": {
+			"type": "stdio",
+			"cwd": "${workspaceFolder}",
+			"command": "./venv/Scripts/python.exe",
+			"args": [
+				"reflex_dev_agent_enhanced.py"
+			],
+			"env": {}
 		}
 	},
 	"inputs": []

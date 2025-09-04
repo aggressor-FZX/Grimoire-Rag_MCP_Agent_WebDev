@@ -3,6 +3,16 @@ venv/
 env/
 ENV/
 
+# Environment variables and secrets
+.env
+.env.local
+.env.production
+.env.staging
+*.key
+config.json
+secrets.json
+composio_config.json
+
 # Python cache and artifacts
 __pycache__/
 *.pyc
@@ -17,6 +27,7 @@ __pycache__/
 
 # ChromaDB database
 chroma_db/
+reflex_chroma_db/
 
 # Packaging / distribution
 build/
