@@ -1,11 +1,23 @@
 {
-  "servers": {
-    "composio-docs-enhanced": {
-      "command": "./venv/Scripts/python.exe",
-      "args": ["composio_docs_server_enhanced.py"],
-      "type": "stdio",
-      "cwd": "${workspaceFolder}",
-      "env": {}
-    }
-  }
+	"servers": {
+		"composio-docs-enhanced": {
+			"command": "./venv/Scripts/python.exe",
+			"args": [
+				"composio_docs_server_enhanced.py"
+			],
+			"type": "stdio",
+			"cwd": "${workspaceFolder}",
+			"env": {}
+		},
+		"reflex-docs-enhanced": {
+			"type": "stdio",
+			"cwd": "${workspaceFolder}",
+			"command": "./venv/Scripts/python.exe",
+			"args": [
+				"reflex_docs_server_enhanced.py"
+			],
+			"env": {}
+		}
+	},
+	"inputs": []
 }
