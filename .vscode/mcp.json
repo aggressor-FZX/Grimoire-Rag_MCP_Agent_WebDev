@@ -18,12 +18,12 @@
 			],
 			"env": {}
 		},
-		"reflex-dev-agent-enhanced": {
+		"reflex-dev-agent": {
 			"type": "stdio",
 			"cwd": "${workspaceFolder}",
 			"command": "./venv/Scripts/python.exe",
 			"args": [
-				"reflex_dev_agent_enhanced.py"
+				"reflex_dev_agent.py"
 			],
 			"env": {}
 		}

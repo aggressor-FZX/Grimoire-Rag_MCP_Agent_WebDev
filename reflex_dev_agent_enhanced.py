@@ -33,14 +33,14 @@ try:
         os.environ['COMPOSIO_API_KEY'] = composio_api_key
         toolset = ComposioToolSet()
         COMPOSIO_AVAILABLE = True
-        print("✅ Composio initialized successfully with API key from .env")
+        print("✓ Composio initialized successfully with API key from .env")
     else:
         raise ValueError("COMPOSIO_API_KEY not found in environment variables")
         
 except Exception as e:
     toolset = None
     COMPOSIO_AVAILABLE = False
-    print(f"⚠️  Composio not available: {e}")
+    print(f"! Composio not available: {e}")
     print("   Make sure COMPOSIO_API_KEY is set in your .env file")
     print("   Continuing with basic functionality...")
 
@@ -56,81 +56,98 @@ class ReflexAppContext:
 
 
 class ReflexWebInspector:
-    """Playwright-powered web inspector for hydrated Reflex applications."""
+    """
+    Playwright-powered web inspector for hydrated Reflex applications.
+    This class manages a persistent browser instance but creates a new page
+    for each inspection to ensure thread safety and avoid state conflicts.
+    """
     
     def __init__(self):
         self.browser: Optional[Browser] = None
-        self.page: Optional[Page] = None
         self.playwright = None
-        
-    async def initialize(self, headless: bool = True):
-        """Initialize Playwright browser."""
-        if not self.playwright:
-            self.playwright = await async_playwright().start()
-            self.browser = await self.playwright.chromium.launch(headless=headless)
-            self.page = await self.browser.new_page()
-            
+        self._lock = asyncio.Lock()
+
+    async def initialize_browser(self, headless: bool = True):
+        """Initialize Playwright and the browser if not already running."""
+        async with self._lock:
+            if not self.playwright:
+                self.playwright = await async_playwright().start()
+            if not self.browser or not self.browser.is_connected():
+                try:
+                    self.browser = await self.playwright.chromium.launch(headless=headless)
+                except Exception as e:
+                    print(f"Failed to launch browser: {e}")
+                    # Attempt to install browsers as a fallback
+                    print("Attempting to install Playwright browsers...")
+                    # Using os.system is a simple approach for this script
+                    import subprocess
+                    subprocess.run(["playwright", "install"], check=True)
+                    self.browser = await self.playwright.chromium.launch(headless=headless)
+
     async def cleanup(self):
         """Clean up Playwright resources."""
-        if self.page:
-            await self.page.close()
-        if self.browser:
-            await self.browser.close()
-        if self.playwright:
-            await self.playwright.stop()
+        async with self._lock:
+            if self.browser and self.browser.is_connected():
+                await self.browser.close()
+                self.browser = None
+            if self.playwright:
+                await self.playwright.stop()
+                self.playwright = None
             
     async def inspect_page(self, url: str, selector: Optional[str] = None) -> Dict[str, Any]:
         """Inspect a Reflex page and return hydrated DOM information."""
-        if not self.page:
-            await self.initialize()
-            
+        await self.initialize_browser()
+        if not self.browser:
+            return {'error': 'Browser could not be initialized.', 'url': url}
+
+        page = None
+        console_logs = []
         try:
-            # Navigate and wait for hydration
-            await self.page.goto(url)
-            await self.page.wait_for_load_state('networkidle')
-            
-            # Wait for React hydration (Reflex uses React under the hood)
-            await self.page.wait_for_function("window.React !== undefined", timeout=10000)
+            page = await self.browser.new_page()
+            page.on("console", lambda msg: console_logs.append(f"[{msg.type}] {msg.text}"))
+
+            await page.goto(url, wait_until='networkidle', timeout=20000)
+            await page.wait_for_function("window.React !== undefined", timeout=20000)
             
             result = {
                 'url': url,
-                'title': await self.page.title(),
-                'viewport': await self.page.viewport_size(),
-                'timestamp': time.time()
+                'title': await page.title(),
+                'viewport': await page.viewport_size(),
+                'timestamp': time.time(),
+                'console_logs': console_logs,
             }
             
             if selector:
-                # Inspect specific element
-                element = await self.page.query_selector(selector)
+                element = await page.query_selector(selector)
                 if element:
                     result['element'] = {
                         'text': await element.text_content(),
                         'html': await element.inner_html(),
                         'attributes': await element.evaluate('el => Object.fromEntries(Array.from(el.attributes).map(attr => [attr.name, attr.value]))'),
-                        'computed_styles': await element.evaluate('el => window.getComputedStyle(el)')
                     }
             else:
-                # Full page analysis
-                result['body_html'] = await self.page.inner_html('body')
-                result['components'] = await self._extract_reflex_components()
-                result['state_data'] = await self._extract_state_data()
+                result['body_html'] = await page.inner_html('body')
+                result['components'] = await self._extract_reflex_components(page)
+                result['state_data'] = await self._extract_state_data(page)
                 
             return result
             
         except Exception as e:
-            return {'error': str(e), 'url': url}
+            error_report = {'error': str(e), 'url': url}
+            if console_logs:
+                error_report['console_logs'] = console_logs
+            return error_report
+        finally:
+            if page:
+                await page.close()
     
-    async def _extract_reflex_components(self) -> List[Dict[str, Any]]:
+    async def _extract_reflex_components(self, page: Page) -> List[Dict[str, Any]]:
         """Extract Reflex component information from the DOM."""
         try:
-            # Look for React/Reflex component markers
-            components = await self.page.evaluate("""
+            return await page.evaluate("""
                 () => {
                     const components = [];
-                    
-                    // Find elements with data-reflex or similar attributes
                     const elements = document.querySelectorAll('[data-reflex], [data-component], .reflex-component');
-                    
                     elements.forEach(el => {
                         components.push({
                             tagName: el.tagName.toLowerCase(),
@@ -141,36 +158,28 @@ class ReflexWebInspector:
                             children: el.children.length
                         });
                     });
-                    
                     return components;
                 }
             """)
-            return components
-        except:
+        except Exception:
             return []
     
-    async def _extract_state_data(self) -> Dict[str, Any]:
+    async def _extract_state_data(self, page: Page) -> Dict[str, Any]:
         """Extract React/Reflex state information from the page."""
         try:
-            state_data = await self.page.evaluate("""
+            return await page.evaluate("""
                 () => {
-                    // Try to access React DevTools or state
                     const reactRoot = document.querySelector('#root');
                     if (reactRoot && reactRoot._reactInternalFiber) {
-                        // Extract React state if available
                         return { type: 'react_state', available: true };
                     }
-                    
-                    // Look for global state variables
                     const globalState = {};
                     if (window.reflexState) globalState.reflexState = window.reflexState;
                     if (window.appState) globalState.appState = window.appState;
-                    
                     return globalState;
                 }
             """)
-            return state_data
-        except:
+        except Exception:
             return {}
 
 
@@ -236,7 +245,33 @@ def composio_action_decorator(toolname):
     return decorator
 
 
-@composio_action_decorator("reflex_dev_tools")
+# Core inspection functions (used by both Composio and MCP tools)
+def inspect_hydrated_page_sync(
+    url: str,
+    selector: Optional[str] = None,
+    wait_for_hydration: bool = True
+) -> Dict[str, Any]:
+    """
+    Synchronous wrapper for inspecting a live Reflex application page using Playwright.
+    
+    Args:
+        url: The URL to inspect (e.g., "http://localhost:3000/dashboard")
+        selector: Optional CSS selector to focus on specific element
+        wait_for_hydration: Whether to wait for React hydration to complete
+        
+    Returns:
+        Detailed information about the page state, components, and DOM structure
+    """
+    try:
+        # Use asyncio.run to handle the async function
+        async def _inspect():
+            return await web_inspector.inspect_page(url, selector)
+        
+        return asyncio.run(_inspect())
+    except Exception as e:
+        return {'error': f'Inspection failed: {str(e)}', 'url': url}
+
+
 def inspect_hydrated_page(
     url: str,
     selector: Optional[str] = None,
@@ -275,7 +310,37 @@ def inspect_hydrated_page(
         return {'error': f'Inspection failed: {str(e)}'}
 
 
-@composio_action_decorator("reflex_dev_tools")
+def simple_web_inspect(url: str) -> Dict[str, Any]:
+    """
+    Simple web inspection using requests (fallback when Playwright fails).
+    
+    Args:
+        url: The URL to inspect
+        
+    Returns:
+        Basic information about the page
+    """
+    try:
+        import requests
+        response = requests.get(url, timeout=10)
+        return {
+            'status': 'success',
+            'url': url,
+            'status_code': response.status_code,
+            'content_length': len(response.text),
+            'title_found': '<title>' in response.text,
+            'has_react': 'React' in response.text or 'react' in response.text,
+            'timestamp': time.time()
+        }
+    except Exception as e:
+        return {
+            'status': 'error',
+            'url': url,
+            'error': str(e),
+            'timestamp': time.time()
+        }
+
+
 def get_reflex_state(
     endpoint: str = "/api/get_state",
     api_base: Optional[str] = None
@@ -302,7 +367,6 @@ def get_reflex_state(
     return api_client.get_state(endpoint)
 
 
-@composio_action_decorator("reflex_dev_tools")
 def trigger_reflex_event(
     endpoint: str,
     event_data: Dict[str, Any],
@@ -330,7 +394,6 @@ def trigger_reflex_event(
     return api_client.trigger_event(endpoint, event_data)
 
 
-@composio_action_decorator("reflex_dev_tools")
 def compare_dom_vs_state(
     page_url: str,
     state_endpoint: str = "/api/get_state",
@@ -383,7 +446,6 @@ def compare_dom_vs_state(
     return comparison
 
 
-@composio_action_decorator("reflex_dev_tools")
 def set_app_context(
     base_url: str = "http://localhost:3000",
     api_base: str = "http://localhost:8000",
@@ -428,11 +490,42 @@ def set_app_context(
 
 # MCP Tools for the agent
 @mcp.tool()
+def reflex_dev_test() -> dict:
+    """
+    Simple test tool to verify MCP is working.
+    
+    Returns:
+        Test response
+    """
+    return {
+        'status': 'success',
+        'message': 'MCP tools are working correctly',
+        'timestamp': time.time(),
+        'playwright_available': True,
+        'composio_available': COMPOSIO_AVAILABLE
+    }
+
+
+@mcp.tool()
+def reflex_dev_simple_web_check(url: str = "https://www.google.com") -> dict:
+    """
+    Simple web check using requests (no Playwright).
+    
+    Args:
+        url: URL to check
+        
+    Returns:
+        Basic web response information
+    """
+    return simple_web_inspect(url)
+
+
+@mcp.tool()
 def reflex_dev_inspect_page(
     url: str,
-    selector: Optional[str] = None,
+    selector: str = None,
     use_current_context: bool = True
-) -> Dict[str, Any]:
+) -> dict:
     """
     Inspect a live Reflex page for development and debugging.
     
@@ -448,12 +541,20 @@ def reflex_dev_inspect_page(
         full_url = urljoin(app_context.base_url, url)
     else:
         full_url = url
-        
-    return inspect_hydrated_page(full_url, selector)
+    
+    # Try Playwright first, fall back to simple inspection
+    try:
+        return inspect_hydrated_page_sync(full_url, selector)
+    except Exception as e:
+        return {
+            'error': f'Playwright inspection failed: {str(e)}',
+            'fallback_result': simple_web_inspect(full_url),
+            'url': full_url
+        }
 
 
 @mcp.tool()
-def reflex_dev_get_state(endpoint: str = None) -> Dict[str, Any]:
+def reflex_dev_get_state(endpoint: str = None) -> dict:
     """
     Fetch current Reflex application state via API.
     
@@ -470,8 +571,8 @@ def reflex_dev_get_state(endpoint: str = None) -> Dict[str, Any]:
 @mcp.tool()
 def reflex_dev_compare_state(
     page_path: str = None,
-    selector: Optional[str] = None
-) -> Dict[str, Any]:
+    selector: str = None
+) -> dict:
     """
     Compare DOM state vs API state for development debugging.
     
@@ -493,7 +594,7 @@ def reflex_dev_configure(
     frontend_url: str = "http://localhost:3000",
     api_url: str = "http://localhost:8000",
     current_page: str = "/"
-) -> Dict[str, Any]:
+) -> dict:
     """
     Configure the Reflex development environment settings.
     
@@ -595,7 +696,7 @@ dev_agent = ReflexDevAgent()
 
 
 @mcp.tool()
-def reflex_dev_agent_suggest(development_goal: str) -> Dict[str, Any]:
+def reflex_dev_agent_suggest(development_goal: str) -> dict:
     """
     Get intelligent suggestions for Reflex development workflow.
     
@@ -609,5 +710,9 @@ def reflex_dev_agent_suggest(development_goal: str) -> Dict[str, Any]:
 
 
 if __name__ == "__main__":
-    # Run the MCP server
+    # Only run the MCP server if this script is executed directly
+    print("Starting Reflex Dev Agent MCP Server...")
     mcp.run()
+else:
+    # If imported, just print that it's available
+    print("Reflex Dev Agent module loaded successfully")

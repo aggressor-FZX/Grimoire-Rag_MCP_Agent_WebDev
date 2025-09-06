@@ -43,65 +43,91 @@ class ReflexDocsRetriever:
         print(f"Initialized Reflex docs retriever with {self.collection.count()} existing chunks")
     
     def scrape_page(self, url: str, max_retries: int = 3) -> Optional[Dict]:
-        """Scrape a single documentation page with retry logic."""
+        """Scrape a single documentation page with retry logic and context-aware code block extraction."""
         for attempt in range(max_retries):
             try:
                 headers = {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
                 }
                 
-                response = requests.get(url, headers=headers, timeout=10)
+                response = requests.get(url, headers=headers, timeout=15)
                 response.raise_for_status()
                 
                 soup = BeautifulSoup(response.content, 'html.parser')
                 
-                # Remove script and style elements
-                for script in soup(["script", "style", "nav", "header", "footer"]):
-                    script.decompose()
+                # Remove non-content elements
+                for element in soup(["script", "style", "nav", "header", "footer", "aside"]):
+                    element.decompose()
                 
-                # Extract title
                 title = soup.find('title')
                 title_text = title.get_text().strip() if title else "Untitled"
                 
-                # Try to find main content area (common patterns for documentation sites)
-                content_selectors = [
-                    'main',
-                    '.content',
-                    '.documentation',
-                    '.docs-content',
-                    '[role="main"]',
-                    'article',
-                    '.markdown-body'
-                ]
-                
+                content_selectors = ['main', '.content', '.documentation', '.docs-content', '[role="main"]', 'article', '.markdown-body']
                 content_element = None
                 for selector in content_selectors:
                     content_element = soup.select_one(selector)
                     if content_element:
                         break
                 
-                # If no specific content area found, use body
                 if not content_element:
                     content_element = soup.find('body')
                 
                 if not content_element:
+                    print(f"  ❌ Failed: No content element found for {url}")
                     return None
-                
-                # Extract text content
-                text_content = content_element.get_text(separator='\n', strip=True)
-                
-                # Clean up the text
-                lines = text_content.split('\n')
-                cleaned_lines = []
-                for line in lines:
-                    line = line.strip()
-                    if line and len(line) > 10:  # Filter out very short lines
-                        cleaned_lines.append(line)
-                
-                cleaned_content = '\n'.join(cleaned_lines)
-                
-                if len(cleaned_content.strip()) < 100:  # Skip pages with too little content
+
+                # New context-aware extraction logic
+                content_blocks = []
+                # Find all relevant tags in order
+                for element in content_element.find_all(['p', 'h1', 'h2', 'h3', 'h4', 'li', 'pre', 'table']):
+                    if element.name == 'pre':
+                        # Reconstruct code with indentation from span lines
+                        lines = element.find_all('span', class_='line')
+                        code_text = '\n'.join(''.join(span.get_text() for span in line.find_all('span')) for line in lines)
+
+                        if not code_text.strip():
+                            # Fallback for simple <pre> tags without line spans
+                            code_text = element.get_text()
+
+                        if not code_text.strip():
+                            continue
+
+                        context_text = ""
+                        # Find the most relevant preceding text
+                        prev_element = element
+                        while True:
+                            prev_element = prev_element.find_previous()
+                            if prev_element is None:
+                                break
+                            if prev_element.name in ['p', 'h1', 'h2', 'h3', 'h4', 'li']:
+                                context_text = prev_element.get_text(strip=True)
+                                if context_text:
+                                    break # Found the closest context
+                        
+                        combined_block = ""
+                        if context_text:
+                            combined_block = f"Context: {context_text}\n\nCode Example:\n```python\n{code_text}\n```"
+                            # If the context was the last thing added, replace it
+                            if content_blocks and content_blocks[-1] == context_text:
+                                content_blocks[-1] = combined_block
+                            else:
+                                content_blocks.append(combined_block)
+                        else:
+                            content_blocks.append(f"Code Example:\n```python\n{code_text}\n```")
+                    else:
+                        # Handle other text/table elements
+                        text = element.get_text(strip=True)
+                        if text and len(text) > 15:
+                            # Check if this text is context for a code block that immediately follows
+                            next_sibling = element.find_next_sibling()
+                            if not (next_sibling and next_sibling.name == 'pre'):
+                                content_blocks.append(text)
+
+                if not content_blocks:
+                    print(f"  ❌ Failed: No content blocks extracted from {url}")
                     return None
+
+                cleaned_content = '\n\n---\n\n'.join(content_blocks)
                 
                 return {
                     'url': url,
@@ -111,9 +137,9 @@ class ReflexDocsRetriever:
                 }
                 
             except Exception as e:
-                print(f"  Attempt {attempt + 1} failed: {str(e)}")
+                print(f"  Attempt {attempt + 1} failed for {url}: {str(e)}")
                 if attempt < max_retries - 1:
-                    time.sleep(2 ** attempt)  # Exponential backoff
+                    time.sleep(2 ** attempt)
                 else:
                     return None
     
@@ -168,91 +194,108 @@ class ReflexDocsRetriever:
                 ids=[doc_id]
             )
     
-    def search(self, query: str, n_results: int = 5) -> List[Dict]:
+    def search(self, query: str, n_results: int = 10) -> List[Dict]:
         """Search for relevant documentation chunks."""
         query_embedding = self.model.encode(query).tolist()
         
-        results = self.collection.query(
-            query_embeddings=[query_embedding],
-            n_results=n_results,
-            include=['documents', 'metadatas', 'distances']
-        )
-        
+        try:
+            results = self.collection.query(
+                query_embeddings=[query_embedding],
+                n_results=n_results,
+                include=['documents', 'metadatas', 'distances']
+            )
+        except Exception as e:
+            # This handles the case where the collection was deleted and recreated by another process.
+            print(f"Query failed with error: {e}. Attempting to reconnect to collection...")
+            try:
+                self.collection = self.client.get_or_create_collection(name="reflex_docs")
+                results = self.collection.query(
+                    query_embeddings=[query_embedding],
+                    n_results=n_results,
+                    include=['documents', 'metadatas', 'distances']
+                )
+                print("Reconnected and query successful.")
+            except Exception as e2:
+                print(f"Failed to reconnect and query: {e2}")
+                # Return empty results if reconnection fails
+                return []
+
         formatted_results = []
-        if results['documents'] and results['documents'][0]:
+        if results.get('documents') and results['documents'][0]:
             for i in range(len(results['documents'][0])):
                 formatted_results.append({
                     'content': results['documents'][0][i],
                     'metadata': results['metadatas'][0][i],
-                    'url': results['metadatas'][0][i]['url'],
-                    'title': results['metadatas'][0][i]['title'],
-                    'similarity_score': 1 - results['distances'][0][i]  # Convert distance to similarity
+                    'url': results['metadatas'][0][i].get('url', 'N/A'),
+                    'title': results['metadatas'][0][i].get('title', 'N/A'),
+                    'similarity_score': 1 - results['distances'][0][i] if results['distances'] else 0
                 })
         
         return formatted_results
     
     def get_reflex_documentation_pages(self) -> List[str]:
-        """Get comprehensive list of Reflex documentation pages to scrape."""
-        # Updated with confirmed working URLs
-        base_urls = [
-            # Getting Started (confirmed working)
-            "https://reflex.dev/docs/getting-started/introduction",
-            "https://reflex.dev/docs/getting-started/installation",
-            "https://reflex.dev/docs/getting-started/project-structure",
+        """Get comprehensive list of Reflex documentation pages from the text file."""
+        urls_file = os.path.join(os.path.dirname(__file__), 'reflex_urls.txt')
+        if not os.path.exists(urls_file):
+            print(f"Warning: {urls_file} not found. Using empty URL list.")
+            return []
+
+        with open(urls_file, 'r', encoding='utf-8') as f:
+            raw_urls = f.readlines()
+
+        cleaned_urls = set()
+        for url in raw_urls:
+            url = url.strip()
+            if not url:
+                continue
+
+            # Skip malformed URLs from previous extractions
+            if "https://reflex.devhttps://" in url:
+                url = url.replace("https://reflex.devhttps://", "https://")
+
+            # We only want documentation pages
+            if not url.startswith("https://reflex.dev/docs/"):
+                continue
+
+            # Skip assets
+            if any(url.endswith(ext) for ext in ['.png', '.svg', '.ico', '.css', '.js', '.webmanifest']):
+                continue
             
-            # Main sections (confirmed working)
-            "https://reflex.dev/docs/components",
-            "https://reflex.dev/docs/state",
-            "https://reflex.dev/docs/styling",
-            "https://reflex.dev/docs/styling/overview",
-            "https://reflex.dev/docs/pages",
-            "https://reflex.dev/docs/pages/overview",
-            "https://reflex.dev/docs/api-reference",
-            "https://reflex.dev/docs/hosting",
-            "https://reflex.dev/docs/authentication",
-            "https://reflex.dev/docs/tutorial",
-            
-            # State Management (confirmed working)
-            "https://reflex.dev/docs/state/overview",
-            
-            # Database (confirmed working)
-            "https://reflex.dev/docs/database/overview",
-            "https://reflex.dev/docs/database/tables",
-            
-            # Additional confirmed working pages
-            "https://reflex.dev/docs/recipes",
-            "https://reflex.dev/docs/library",
-            
-            # Try some additional URLs that might work
-            "https://reflex.dev/docs/components/overview",
-            "https://reflex.dev/docs/state/vars",
-            "https://reflex.dev/docs/state/events",
-            "https://reflex.dev/docs/styling/responsive",
-            "https://reflex.dev/docs/pages/routing",
-            "https://reflex.dev/docs/hosting/deploy",
-            "https://reflex.dev/docs/authentication/overview",
-            "https://reflex.dev/docs/components/other",
-            
-            # State pages
-            "https://reflex.dev/docs/state/vars",
-            "https://reflex.dev/docs/state/events",
-            "https://reflex.dev/docs/state/substates",
-            "https://reflex.dev/docs/state/computed-vars",
-            "https://reflex.dev/docs/state/background-tasks",
-            
-            # API Reference
-            "https://reflex.dev/docs/api-reference/app",
-            "https://reflex.dev/docs/api-reference/base",
-            "https://reflex.dev/docs/api-reference/config",
-            "https://reflex.dev/docs/api-reference/state",
-            "https://reflex.dev/docs/api-reference/style",
-            "https://reflex.dev/docs/api-reference/vars",
-        ]
+            # Remove URL fragments
+            url = url.split('#')[0]
+
+            # Remove trailing slash for consistency
+            if url.endswith('/'):
+                url = url[:-1]
+
+            if url:
+                cleaned_urls.add(url)
         
-        return base_urls
+        # Return a sorted list for consistent processing order
+        return sorted(list(cleaned_urls))
     
-    def refresh_documentation(self, max_pages: int = None) -> Dict:
+    def refresh_documentation(self, max_pages: int = None, force_refresh: bool = False) -> Dict:
         """Refresh the documentation database by scraping all pages."""
+        current_count = self.collection.count()
+        if current_count > 0 and not force_refresh:
+            return {
+                "status": "skipped",
+                "message": f"Database already contains {current_count} chunks. Use force_refresh=True to re-scrape.",
+                "current_chunk_count": current_count
+            }
+
+        if force_refresh:
+            print("Clearing existing collection...")
+            try:
+                self.client.delete_collection(name=self.collection.name)
+                self.collection = self.client.get_or_create_collection(
+                    name="reflex_docs",
+                    metadata={"description": "Reflex documentation chunks with embeddings"}
+                )
+                print(f"Collection '{self.collection.name}' cleared and recreated.")
+            except Exception as e:
+                print(f"Warning: Could not clear collection, it might not exist. Error: {e}")
+
         pages = self.get_reflex_documentation_pages()
         
         if max_pages:
@@ -286,7 +329,7 @@ class ReflexDocsRetriever:
                 print(f"  ❌ Failed: {str(e)}")
             
             # Add delay to be respectful
-            time.sleep(1)
+            time.sleep(0.5)
         
         return {
             "total_pages_attempted": len(pages),
@@ -295,6 +338,99 @@ class ReflexDocsRetriever:
             "total_chunks_added": total_chunks,
             "total_chunks_in_db": self.collection.count()
         }
+
+    def refresh_from_xml_file(self, xml_file_path: str, force_refresh: bool = False) -> Dict:
+        """Refresh the documentation database by parsing a local XML file."""
+        current_count = self.collection.count()
+        if current_count > 0 and not force_refresh:
+            return {
+                "status": "skipped",
+                "message": f"Database already contains {current_count} chunks. Use force_refresh=True to re-scrape.",
+                "current_chunk_count": current_count
+            }
+
+        if force_refresh:
+            print("Clearing existing collection...")
+            try:
+                self.client.delete_collection(name=self.collection.name)
+                self.collection = self.client.get_or_create_collection(
+                    name="reflex_docs",
+                    metadata={"description": "Reflex documentation chunks with embeddings"}
+                )
+                print(f"Collection '{self.collection.name}' cleared and recreated.")
+            except Exception as e:
+                print(f"Warning: Could not clear collection, it might not exist. Error: {e}")
+
+        print(f"Reading from XML file: {xml_file_path}")
+        try:
+            with open(xml_file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+        except FileNotFoundError:
+            return {"status": "error", "message": f"XML file not found at {xml_file_path}"}
+
+        soup = BeautifulSoup(content, 'html.parser')
+        
+        content_blocks = []
+        for element in soup.find_all(['p', 'h1', 'h2', 'h3', 'h4', 'li', 'pre', 'table']):
+            if element.name == 'pre':
+                lines = element.find_all('span', class_='line')
+                code_text = '\n'.join(''.join(span.get_text() for span in line.find_all('span')) for line in lines)
+
+                if not code_text.strip():
+                    code_text = element.get_text()
+
+                if not code_text.strip():
+                    continue
+
+                context_text = ""
+                prev_element = element
+                while True:
+                    prev_element = prev_element.find_previous()
+                    if prev_element is None:
+                        break
+                    if prev_element.name in ['p', 'h1', 'h2', 'h3', 'h4', 'li']:
+                        context_text = prev_element.get_text(strip=True)
+                        if context_text:
+                            break
+                
+                combined_block = ""
+                if context_text:
+                    combined_block = f"Context: {context_text}\n\nCode Example:\n```python\n{code_text}\n```"
+                    if content_blocks and content_blocks[-1] == context_text:
+                        content_blocks[-1] = combined_block
+                    else:
+                        content_blocks.append(combined_block)
+                else:
+                    content_blocks.append(f"Code Example:\n```python\n{code_text}\n```")
+            else:
+                text = element.get_text(strip=True)
+                if text and len(text) > 15:
+                    next_sibling = element.find_next_sibling()
+                    if not (next_sibling and next_sibling.name == 'pre'):
+                        content_blocks.append(text)
+
+        if not content_blocks:
+            return {"status": "error", "message": "No content blocks extracted from XML."}
+
+        full_content = '\n\n---\n\n'.join(content_blocks)
+        page_data = {
+            'url': os.path.basename(xml_file_path),
+            'title': 'Local XML Dump',
+            'content': full_content
+        }
+        
+        chunks_before = self.collection.count()
+        self.index_page(page_data)
+        chunks_after = self.collection.count()
+        total_chunks = chunks_after - chunks_before
+
+        stats = {
+            "status": "completed",
+            "source_file": xml_file_path,
+            "total_chunks_added": total_chunks,
+            "total_chunks_in_db": self.collection.count()
+        }
+        return stats
 
 
 class ReflexAgentCoordinator:
@@ -736,6 +872,57 @@ def detect_reflex_intent(text: str) -> dict:
             "text": text
         }
 
+@mcp.tool()
+def refresh_reflex_docs_from_xml(xml_file_path: str, force_refresh: bool = True) -> dict:
+    """
+    Refresh the documentation database by parsing a local XML file.
+    
+    Args:
+        xml_file_path: The absolute path to the XML file.
+        force_refresh: Whether to clear the database before indexing.
+    
+    Returns:
+        Dictionary with refresh results and statistics.
+    """
+    try:
+        print(f"Starting documentation refresh from XML file: {xml_file_path}...")
+        stats = retriever.refresh_from_xml_file(xml_file_path=xml_file_path, force_refresh=force_refresh)
+        return {
+            "status": "completed",
+            "message": "Reflex documentation database refreshed successfully from XML.",
+            **stats
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"XML Refresh failed: {str(e)}"
+        }
+
 if __name__ == "__main__":
-    print("Starting Reflex Documentation MCP Server...")
-    mcp.run()
+    import argparse
+    parser = argparse.ArgumentParser(description="Reflex Docs MCP Server CLI")
+    parser.add_argument("command", nargs='?', default="run", help="Command to run: 'run' or 'test-search'")
+    parser.add_argument("--query", help="Search query for test-search")
+
+    args = parser.parse_args()
+
+    if args.command == "test-search":
+        query = args.query if args.query else "how to add a button"
+        print(f"--- Testing Search for: '{query}' ---")
+        retriever = ReflexDocsRetriever()
+        results = retriever.search(query, n_results=5)
+        if results:
+            for i, res in enumerate(results, 1):
+                print(f"\n--- Result {i} (Score: {res['similarity_score']:.4f}) ---")
+                print(f"URL: {res['url']}")
+                print(f"Title: {res['title']}")
+                print("Content:")
+                print(res['content'])
+                print("-" * 20)
+        else:
+            print("No results found.")
+    elif args.command == "run":
+        mcp.run()
+    else:
+        print(f"Unknown command: {args.command}")
+        parser.print_help()
