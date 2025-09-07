@@ -1,3 +1,4 @@
+OBSOLETE: moved to obsoleate/ folder.
 # Enhanced Reflex Development Agent - Implementation Status
 
 ## ✅ COMPLETED FEATURES

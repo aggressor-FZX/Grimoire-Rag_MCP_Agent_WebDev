@@ -1,3 +1,4 @@
+OBSOLETE: moved to obsoleate/ folder.
 # 🧪 MCP Tools Test Results - September 6, 2025
 
 ## ✅ **Test Summary: ALL SYSTEMS WORKING**

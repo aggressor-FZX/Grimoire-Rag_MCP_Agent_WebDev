@@ -1,3 +1,4 @@
+# Obsolete: moved to obsoleate/ (original content removed).
 # composio_docs_server_enhanced.py
 import os
 import re

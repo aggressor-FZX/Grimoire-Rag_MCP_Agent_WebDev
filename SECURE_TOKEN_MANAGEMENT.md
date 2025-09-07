@@ -1,3 +1,4 @@
+OBSOLETE: moved to obsoleate/ folder.
 # 🔐 Secure Token Management Guide
 
 ## Overview

@@ -1,31 +1,45 @@
 {
 	"servers": {
 		"composio-docs-enhanced": {
-			"command": "./venv/Scripts/python.exe",
-			"args": [
-				"composio_docs_server_enhanced.py"
-			],
+			"command": "J:/Desktop/ConnectAI/envs/mcp/.venv/Scripts/python.exe",
+			"args": ["composio_docs_server_enhanced.py"],
 			"type": "stdio",
 			"cwd": "${workspaceFolder}",
-			"env": {}
+			"env": {
+				"PYTHONPATH": "J:/Desktop/ConnectAI/Grimoire3",
+				"PYTHONNOUSERSITE": "1",
+				"REFLEX_BASE_URL": "http://127.0.0.1:3001",
+				"PLAYWRIGHT_BROWSERS_PATH": "J:/Desktop/ConnectAI/pw-browsers",
+				"MCP_PLAYWRIGHT_PY": "J:/Desktop/ConnectAI/envs/pw/.venv/Scripts/python.exe",
+				"PYTHONIOENCODING": "UTF-8"
+			}
 		},
 		"reflex-docs-enhanced": {
 			"type": "stdio",
 			"cwd": "${workspaceFolder}",
-			"command": "./venv/Scripts/python.exe",
-			"args": [
-				"reflex_docs_server_enhanced.py"
-			],
-			"env": {}
+			"command": "J:/Desktop/ConnectAI/envs/mcp/.venv/Scripts/python.exe",
+			"args": ["reflex_docs_server_enhanced.py"],
+			"env": {
+				"PYTHONPATH": "J:/Desktop/ConnectAI/Grimoire3",
+				"PYTHONNOUSERSITE": "1",
+				"REFLEX_BASE_URL": "http://127.0.0.1:3001",
+				"PLAYWRIGHT_BROWSERS_PATH": "J:/Desktop/ConnectAI/pw-browsers",
+				"MCP_PLAYWRIGHT_PY": "J:/Desktop/ConnectAI/envs/pw/.venv/Scripts/python.exe",
+				"PYTHONIOENCODING": "UTF-8"
+			}
 		},
 		"reflex-dev-agent": {
 			"type": "stdio",
-			"cwd": "${workspaceFolder}",
-			"command": "./venv/Scripts/python.exe",
-			"args": [
-				"reflex_dev_agent.py"
-			],
-			"env": {}
+			"command": "J:/Desktop/ConnectAI/envs/mcp/.venv/Scripts/python.exe",
+			"args": ["reflex_dev_agent.py"],
+			"env": {
+				"PYTHONPATH": "J:/Desktop/ConnectAI/Grimoire3",
+				"PYTHONNOUSERSITE": "1",
+				"REFLEX_BASE_URL": "http://127.0.0.1:3001",
+				"PLAYWRIGHT_BROWSERS_PATH": "J:/Desktop/ConnectAI/pw-browsers",
+				"MCP_PLAYWRIGHT_PY": "J:/Desktop/ConnectAI/envs/pw/.venv/Scripts/python.exe",
+				"PYTHONIOENCODING": "UTF-8"
+			}
 		}
 	},
 	"inputs": []

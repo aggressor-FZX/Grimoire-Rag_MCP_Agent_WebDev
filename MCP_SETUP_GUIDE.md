@@ -1,3 +1,4 @@
+OBSOLETE: moved to obsoleate/ folder.
 # Grimoire3 MCP Tools - Clean Setup Guide
 
 ## 📁 **Cleaned Directory Structure**

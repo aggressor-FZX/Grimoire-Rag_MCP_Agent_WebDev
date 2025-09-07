@@ -1,3 +1,4 @@
+OBSOLETE: moved to obsoleate/ folder.
 # MCP Tool Optimization Summary
 
 ## ✅ Successfully Implemented Non-blocking MCP Server

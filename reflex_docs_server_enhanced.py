@@ -1,3 +1,4 @@
+# Obsolete: moved to obsoleate/ (original content removed).
 #!/usr/bin/env python3
 """
 Reflex Documentation MCP Server with Intelligent Agent
